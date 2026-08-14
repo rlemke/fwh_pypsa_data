@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fwh-pypsa-data"
+version = "0.1.0"
+description = "PyPSA-Eur's data-retrieval layer as an FFL workflow — the port of rules/retrieve.smk"
+requires-python = ">=3.11"
+dependencies = ["facetwork>=0.31.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.entry-points."facetwork.domains"]
+pypsa-data = "pypsa_data:domain"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pypsa_data = ["ffl/*.ffl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

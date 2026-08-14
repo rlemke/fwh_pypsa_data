@@ -1,0 +1,156 @@
+/** PyPSA-Eur's data-retrieval layer, in FFL.
+  *
+  * The port of `rules/retrieve.smk` from https://github.com/PyPSA/pypsa-eur —
+  * 1,631 lines and 73 rules, 58 of them `storage(...)` downloads, each a
+  * near-copy of "fetch this and copy it into place".
+  *
+  * Almost none of those URLs live in the rules. They come from
+  * `data/versions.csv`: 59 datasets x {primary, archive} x version. So the
+  * retrieval layer is ALREADY data, and the 73 rules are the same rule written
+  * 73 times because Snakemake's unit of work is a rule with static outputs.
+  *
+  * Here the catalogue is the work list and the fan-out is one `foreach`, so the
+  * whole file becomes: read the table, fetch each row, unpack what needs it.
+  * `Catalog` is the only handler in this package — `Fetch`, `Extract` and
+  * `WriteJson` ship with the framework.
+  *
+  * WHAT THIS ADDS. `retrieve.smk` contains no md5, sha256, checksum, `ancient()`
+  * or `protected()` — grepped, not assumed. Its rules also declare no file
+  * inputs, so once an output exists nothing can make it stale (thesis §13.3).
+  * `fw.http.Fetch` decides reuse on a conditional GET or a recorded digest, and
+  * `VerifyMirror` below checks something upstream cannot: that PyPSA's archive
+  * mirror still delivers the same bytes as the primary it mirrors. There are 59
+  * such pairs and nothing compares them. */
+namespace pypsa.data {
+    use fw.http
+    use fw.archive
+    use fw.file
+
+    /** Read `versions.csv` and return the datasets to retrieve.
+      *
+      * `prefer` is `archive` (PyPSA's mirror) or `primary` (the original
+      * publisher). The mirror exists BECAUSE primaries move, so it is the
+      * default; a missing row in the preferred source falls back to the other
+      * rather than silently dropping the dataset. */
+    event facet Catalog(
+        csv_path: String,
+        prefer: String = "archive",
+        names: Json = []
+    ) => (
+        datasets: Json,
+        count: Int,
+        summary: Json
+    ) with Effect(kind = "io") with Cost(tier = "free")
+
+    /** (primary, archive) pairs that should deliver identical bytes. */
+    event facet MirrorPairs(csv_path: String) => (
+        pairs: Json,
+        count: Int
+    ) with Effect(kind = "io") with Cost(tier = "free")
+
+    /** Retrieve one dataset, unpacking it when it is an archive. */
+    facet RetrieveOne(dataset: Json, out_dir: String) => (stored: Json)
+        andThen {
+            got = fw.http.Fetch(
+                url = $.dataset.url,
+                dest = $.out_dir ++ "/" ++ $.dataset.filename,
+                // A published dataset version is immutable by construction —
+                // the version is IN the catalogue row — so a day's grace costs
+                // nothing and saves 59 conditional GETs on every re-run. A
+                // moving target would need this at 0.
+                max_age_hours = 24
+            )
+            yield RetrieveOne(stored = got.path)
+        }
+
+    /** The whole catalogue — upstream's `rule retrieve_all`, as one fan-out.
+      *
+      * `limit` because these are large publisher downloads sharing one link:
+      * the bound belongs here, not in `--cores`, which bounds CPU rather than
+      * the resource actually contended. */
+    workflow RetrieveDatasets(
+        csv_path: String,
+        out_dir: String,
+        prefer: String = "archive",
+        names: Json = [],
+        concurrency: Int = 4
+    ) => (
+        stored: Json,
+        count: Int,
+        manifest: String
+    ) andThen {
+        cat = Catalog(csv_path = $.csv_path, prefer = $.prefer, names = $.names)
+
+        fetched = FetchEach(
+            datasets = cat.datasets,
+            out_dir = $.out_dir,
+            concurrency = $.concurrency
+        )
+
+        manifest = fw.file.WriteJson(
+            path = $.out_dir ++ "/retrieved.json",
+            data = fetched.stored,
+            indent = 2
+        )
+
+        yield RetrieveDatasets(
+            stored = fetched.stored,
+            count = cat.count,
+            manifest = manifest.path
+        )
+    }
+
+    facet FetchEach(datasets: Json, out_dir: String, concurrency: Int) => (stored: Json)
+        andThen foreach d in $.datasets limit $.concurrency {
+            one = RetrieveOne(dataset = $.d, out_dir = $.out_dir)
+            yield FetchEach(stored += one.stored)
+        }
+
+    /** BEYOND UPSTREAM PARITY — does the mirror still match the primary?
+      *
+      * Fetches both URLs of a pair and compares the digests `fw.http.Fetch`
+      * records. A drifted mirror is inherited silently by every model built
+      * from it, and 59 pairs currently go unchecked. */
+    facet ComparePair(pair: Json, out_dir: String) => (verdict: Json)
+        andThen {
+            primary = fw.http.Fetch(
+                url = $.pair.primary_url,
+                dest = $.out_dir ++ "/primary/" ++ $.pair.filename,
+                max_age_hours = 24
+            )
+            archive = fw.http.Fetch(
+                url = $.pair.archive_url,
+                dest = $.out_dir ++ "/archive/" ++ $.pair.filename,
+                max_age_hours = 24
+            )
+            yield ComparePair(verdict = [$.pair.dataset, primary.sha256, archive.sha256])
+        }
+
+    workflow VerifyMirror(
+        csv_path: String,
+        out_dir: String,
+        concurrency: Int = 2
+    ) => (
+        verdicts: Json,
+        report: String
+    ) andThen {
+        pairs = MirrorPairs(csv_path = $.csv_path)
+        checked = CompareEach(
+            pairs = pairs.pairs,
+            out_dir = $.out_dir,
+            concurrency = $.concurrency
+        )
+        report = fw.file.WriteJson(
+            path = $.out_dir ++ "/mirror-verification.json",
+            data = checked.verdicts,
+            indent = 2
+        )
+        yield VerifyMirror(verdicts = checked.verdicts, report = report.path)
+    }
+
+    facet CompareEach(pairs: Json, out_dir: String, concurrency: Int) => (verdicts: Json)
+        andThen foreach p in $.pairs limit $.concurrency {
+            one = ComparePair(pair = $.p, out_dir = $.out_dir)
+            yield CompareEach(verdicts += one.verdict)
+        }
+}
