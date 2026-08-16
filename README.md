@@ -59,25 +59,44 @@ recording, not just that it exists.
 |---|---|
 | `emobility` 28-08-2016 | **match** — same sha256 on both sides |
 | `nuts3_population` 13-03-2025 | **differs** — both rows carry that same version label, but the primary has gained a 2024 column, **dropped 35 rows** (every Swiss `CH*` NUTS region) and revised all 1,755 rows the two share |
-| `ons_lad` may-2024 | **primary is broken** — it serves an **ArcGIS "Services Directory" HTML page** with `Content-Type: text/html` and **HTTP 200**, 11 KB where the archive holds the 2.7 MB GeoJSON |
+| `ons_lad` may-2024 | **differs — and the fault is this port's.** Fetching the primary yields an ArcGIS "Services Directory" HTML page (`text/html`, HTTP 200, 11 KB) instead of the 2.7 MB GeoJSON |
 
-`ons_lad` is the one worth dwelling on: it is a *successful* download of the
-wrong thing. A `storage(...)` rule saves it, the rule succeeds, the file exists
-and is newer than its inputs, and the pipeline continues with a web page where a
-boundary file should be. Nothing in `retrieve.smk` inspects a content type or a
-digest, so nothing can say otherwise — thesis §13.3, as a live example rather
-than an argument. `fw.http.Fetch` records `content_type` in the sidecar, which
-is what made it obvious here.
+`ons_lad` is the one worth dwelling on, but not for the reason it first looks.
+Its primary is an ArcGIS **`/query` endpoint**, and a bare GET of it returns the
+query *form*. Upstream knows: the row's `note` column says "API request used",
+and `retrieve.smk` has a dedicated `source: primary` branch that does not use
+`storage()` at all —
 
-**The scope of that claim, honestly.** `config.default.yaml` sets
-`source: archive` for both, so upstream's *default* path is unaffected — the
-mirror is doing exactly the job it exists for. What is affected is the
-per-dataset `source: primary` switch the catalogue exists to offer: flip it for
-`ons_lad` and you silently get HTML, flip it for `nuts3_population` and you
-silently get different data under an unchanged version label. Seven of the 59
-datasets do default to `primary`, and a header probe of all seven shows sane
-content types today (xlsx, GeoTIFF, JSON, octet-stream), so none is in this
-state right now.
+```python
+params = {"outFields": "*", "where": "1=1", "f": "geojson"}
+response = requests.get(url, params=params)
+```
+
+So there is no upstream bug here, and the mirror check found a defect in **this
+port** instead: `RetrieveDatasets` treats every `url` cell as a plain GET, which
+for that row silently stores a web page under a `.geojson` name. `VerifyMirror`
+inherits the same flaw — it compared a real GeoJSON against an HTML form and
+called it a mismatch, which is true but is not the drift it claims to detect.
+
+**Which qualifies the headline claim, so state it plainly.** The catalogue is
+*mostly* a work list, not entirely one. A minority of rows need a request shape
+the CSV cannot express, and upstream encodes those in rule bodies — which is
+part of why not all 73 rules are near-copies. On the default `prefer="archive"`
+path this does not bite: every archive row is a static file on `data.pypsa.org`
+(PyPSA has already materialised the API result), and the two archive rows whose
+note mentions an API are describing how the *dataset* was obtained, not how to
+fetch that row. On `prefer="primary"` it bites for **5 of 59 rows**: `eez` and
+`ons_lad` need query parameters, and `wdpa` / `wdpa_marine` are URL *templates*
+whose `{bYYYY}` upstream substitutes in `retrieve.smk` — fetched literally, they
+are not URLs at all.
+
+**Scope of the `nuts3_population` finding.** `config.default.yaml` sets
+`source: archive` for it, so upstream's default path is unaffected — the mirror
+is doing exactly the job it exists for. What is affected is the per-dataset
+`source: primary` switch: flip it and you get different data under an unchanged
+version label, with nothing to report it. Seven of the 59 datasets do default to
+`primary`, and a header probe of all seven shows sane content types today
+(xlsx, GeoTIFF, JSON, octet-stream).
 
 Sizing, from `Content-Length` alone: only **29 of the 59 pairs report a size on
 both sides** (several refuse HEAD, including the Zenodo-hosted `costs`), and
