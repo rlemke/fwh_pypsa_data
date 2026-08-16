@@ -33,12 +33,25 @@ def _read(csv_path: str) -> list:
 def handle_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     entries = _read(payload["csv_path"])
     names = payload.get("names") or None
+    versions = payload.get("versions") or _catalog.V_LATEST
+    supported_only = payload.get("supported_only")
     chosen = _catalog.select(
-        entries, prefer=payload.get("prefer") or _catalog.ARCHIVE, names=names
+        entries,
+        prefer=payload.get("prefer") or _catalog.ARCHIVE,
+        names=names,
+        versions=versions,
+        supported_only=True if supported_only is None else bool(supported_only),
     )
     step_log = payload.get("_step_log")
     if callable(step_log):
-        step_log(f"catalogue: {len(chosen)} dataset(s) selected of {len(entries)} rows")
+        # Say what was skipped, not just what was picked: the gap between the
+        # two is deprecated/unsupported versions and moving un-versioned rows,
+        # and it is the difference between a 59- and a 94-download run.
+        step_log(
+            f"catalogue: {len(chosen)} download(s) selected of {len(entries)} rows "
+            f"(versions={versions}, supported_only="
+            f"{True if supported_only is None else bool(supported_only)})"
+        )
     return {
         "datasets": [d.as_dict() for d in chosen],
         "count": len(chosen),
@@ -47,7 +60,9 @@ def handle_catalog(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_mirror_pairs(payload: dict[str, Any]) -> dict[str, Any]:
-    pairs = _catalog.pairs_for_verification(_read(payload["csv_path"]))
+    pairs = _catalog.pairs_for_verification(
+        _read(payload["csv_path"]), names=payload.get("names") or None
+    )
     out = [
         {
             "dataset": p.name,

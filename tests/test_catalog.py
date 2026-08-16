@@ -158,3 +158,122 @@ def test_fanout_yields_aggregate():
     src = (_ROOT / "src" / "pypsa_data" / "ffl" / "pypsa_data.ffl").read_text()
     assert "stored += one.stored" in src
     assert "verdicts += one.verdict" in src
+
+
+# ---------------------------------------------------------------------------
+# Tag-aware selection — upstream's `dataset_version` rule, not a superset of it
+# ---------------------------------------------------------------------------
+
+
+def test_default_selects_one_download_per_dataset(entries):
+    """Upstream's `dataset_version` filters on source + the `supported` and
+    `latest` tags and then `.squeeze()`s to a SINGLE row, so a full run is one
+    download per dataset. Ignoring the tags is not a harmless superset: it
+    fetches 94 files for 59 datasets."""
+    chosen = catalog.select(entries)
+    assert len(chosen) == 59
+    assert len({d.name for d in chosen}) == 59
+
+
+def test_all_versions_is_the_escape_hatch(entries):
+    """Reproducing an older model needs the versions the default drops."""
+    every = catalog.select(entries, versions=catalog.V_ALL, supported_only=False)
+    assert len(every) == 94
+    costs = [d for d in every if d.name == "costs"]
+    assert len(costs) > 1, "the escape hatch must keep every version of a dataset"
+    assert len([d for d in catalog.select(entries) if d.name == "costs"]) == 1
+
+
+def test_deprecated_and_unsupported_versions_are_not_fetched(entries):
+    """The tags column is exactly the supported-version marker. Fetching a
+    version upstream marks `not-supported` builds a model from data upstream
+    says will not work."""
+    chosen = catalog.select(entries)
+    for d in chosen:
+        assert "deprecated" not in d.tag_set
+        assert "not-supported" not in d.tag_set
+
+
+def test_the_moving_unversioned_row_does_not_duplicate_the_pinned_one(entries):
+    """Eleven datasets carry a dated row AND a version=`unknown` row — the
+    moving un-versioned primary. Keyed on (dataset, version) those look like
+    two versions, so `prefer="archive"` could not dedupe them and the moving
+    target was fetched next to the pinned mirror copy of the same thing."""
+    for name in ("wdpa", "worldbank_urban_population", "eurostat_household_balances"):
+        picked = [d for d in catalog.select(entries) if d.name == name]
+        assert len(picked) == 1, f"{name}: {[(d.version, d.source) for d in picked]}"
+
+
+def test_a_dataset_whose_rows_all_fail_the_filter_is_not_dropped():
+    """Over-fetching is recoverable; silently retrieving nothing for a dataset
+    the caller asked for surfaces as a missing input three steps later."""
+    csv_text = (
+        "dataset,version,source,tags,added,note,url\n"
+        "orphan,1.0,primary,deprecated not-supported,2020-01-01,,https://x/o-1.0.zip\n"
+        "orphan,0.9,archive,deprecated not-supported,2020-01-01,,https://y/o-0.9.zip\n"
+    )
+    got = catalog.select(catalog.parse_catalog(csv_text))
+    assert {d.name for d in got} == {"orphan"}
+
+
+def test_an_unknown_versions_policy_is_rejected(entries):
+    with pytest.raises(ValueError, match="versions must be"):
+        catalog.select(entries, versions="newest")
+
+
+def test_summarise_reports_what_a_full_run_would_cost(entries):
+    """The count that decides whether a run fits the link is the number of
+    downloads, not the number of rows in the table."""
+    s = catalog.summarise(entries)
+    assert s["downloads_default"] == 59
+    assert s["downloads_all_versions"] == 94
+    assert s["downloads_default"] < s["rows"]
+
+
+def test_mirror_pairs_can_be_restricted_to_names(entries):
+    """Verification fetches BOTH sides of a pair, so all 59 is several GB.
+    Without a filter the check is all-or-nothing, i.e. nothing on a slow link."""
+    one = catalog.pairs_for_verification(entries, names=["aquifer_data"])
+    assert [p.name for p, _ in one] == ["aquifer_data"]
+    assert len(catalog.pairs_for_verification(entries)) == 59
+
+
+def test_mirror_pairs_ignore_the_tags(entries):
+    """A mirror of a deprecated version is still supposed to match what it
+    mirrors — verification asks a different question from selection."""
+    pairs = catalog.pairs_for_verification(entries)
+    assert any("deprecated" in p.tag_set or "not-supported" in p.tag_set for p, _ in pairs)
+
+
+def test_handler_payload_carries_the_selection_policy(tmp_path):
+    """The FFL params have to reach `select` under exactly these payload keys —
+    a typo here is silent: the run just fetches the wrong set."""
+    from pypsa_data.handlers.catalog import catalog_handlers
+
+    csv_path = tmp_path / "versions.csv"
+    csv_path.write_text(SAMPLE)
+
+    def run(**extra):
+        return catalog_handlers.handle(
+            {"_facet_name": "pypsa.data.Catalog", "csv_path": str(csv_path), **extra}
+        )
+
+    assert run()["count"] == 59
+    assert run(versions="all", supported_only=False)["count"] == 94
+    # supported_only=False must not silently re-enable every version
+    assert run(supported_only=False)["count"] == 59
+
+
+def test_mirror_pairs_handler_takes_names(tmp_path):
+    from pypsa_data.handlers.catalog import catalog_handlers
+
+    csv_path = tmp_path / "versions.csv"
+    csv_path.write_text(SAMPLE)
+    out = catalog_handlers.handle(
+        {
+            "_facet_name": "pypsa.data.MirrorPairs",
+            "csv_path": str(csv_path),
+            "names": ["aquifer_data"],
+        }
+    )
+    assert out["count"] == 1 and out["pairs"][0]["dataset"] == "aquifer_data"

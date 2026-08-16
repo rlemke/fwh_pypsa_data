@@ -31,19 +31,33 @@ namespace pypsa.data {
       * `prefer` is `archive` (PyPSA's mirror) or `primary` (the original
       * publisher). The mirror exists BECAUSE primaries move, so it is the
       * default; a missing row in the preferred source falls back to the other
-      * rather than silently dropping the dataset. */
+      * rather than silently dropping the dataset.
+      *
+      * `versions` is `latest` (default — one download per dataset, upstream's
+      * own rule) or `all` (every version, for reproducing an older model).
+      * `supported_only` drops rows not tagged `supported`. Together they are
+      * upstream's `dataset_version` selector: on the real catalogue the
+      * defaults fetch 59 files, and turning both off fetches 94 — the extra 35
+      * being deprecated versions, versions tagged `not-supported`, and eleven
+      * moving un-versioned rows that duplicate the pinned copy. */
     event facet Catalog(
         csv_path: String,
         prefer: String = "archive",
-        names: Json = []
+        names: Json = [],
+        versions: String = "latest",
+        supported_only: Boolean = true
     ) => (
         datasets: Json,
         count: Int,
         summary: Json
     ) with Effect(kind = "io") with Cost(tier = "free")
 
-    /** (primary, archive) pairs that should deliver identical bytes. */
-    event facet MirrorPairs(csv_path: String) => (
+    /** (primary, archive) pairs that should deliver identical bytes.
+      *
+      * `names` restricts the check — verification fetches BOTH sides of every
+      * pair, so all 59 is several GB and the check is otherwise unrunnable on a
+      * slow or metered link. */
+    event facet MirrorPairs(csv_path: String, names: Json = []) => (
         pairs: Json,
         count: Int
     ) with Effect(kind = "io") with Cost(tier = "free")
@@ -73,13 +87,21 @@ namespace pypsa.data {
         out_dir: String,
         prefer: String = "archive",
         names: Json = [],
+        versions: String = "latest",
+        supported_only: Boolean = true,
         concurrency: Int = 4
     ) => (
         stored: Json,
         count: Int,
         manifest: String
     ) andThen {
-        cat = Catalog(csv_path = $.csv_path, prefer = $.prefer, names = $.names)
+        cat = Catalog(
+            csv_path = $.csv_path,
+            prefer = $.prefer,
+            names = $.names,
+            versions = $.versions,
+            supported_only = $.supported_only
+        )
 
         fetched = FetchEach(
             datasets = cat.datasets,
@@ -129,12 +151,13 @@ namespace pypsa.data {
     workflow VerifyMirror(
         csv_path: String,
         out_dir: String,
+        names: Json = [],
         concurrency: Int = 2
     ) => (
         verdicts: Json,
         report: String
     ) andThen {
-        pairs = MirrorPairs(csv_path = $.csv_path)
+        pairs = MirrorPairs(csv_path = $.csv_path, names = $.names)
         checked = CompareEach(
             pairs = pairs.pairs,
             out_dir = $.out_dir,
