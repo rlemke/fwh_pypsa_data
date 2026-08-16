@@ -28,7 +28,7 @@ so a work list is a selection, not a listing. `Catalog` applies upstream's own
 rule (`dataset_version` in `rules/common.smk`: match the source, require the
 `supported` and `latest` tags, then `.squeeze()` to one row) and so fetches
 **59 files — one per dataset**. `versions="all"` plus `supported_only=false` is
-the escape hatch for reproducing an older model, and fetches 94. The 35-file
+the escape hatch for reproducing an older model, and fetches 92. The 33-file
 difference is deprecated versions, versions upstream tags `not-supported`, and
 eleven `version=unknown` rows — the *moving un-versioned primary*, which keyed
 on `(dataset, version)` looks like a version of its own and so survived a
@@ -42,13 +42,16 @@ so once an output exists nothing can make it stale (thesis §13.3).
 
 * `fw.http.Fetch` decides reuse on a conditional GET or a recorded digest.
 * `VerifyMirror` checks something upstream cannot: that PyPSA's archive mirror
-  still delivers the same bytes as the primary it mirrors. **59 such pairs
-  exist and nothing compares them.** They cover 42 of the 59 datasets: for the
+  still delivers the same bytes as the primary it mirrors. **58 such pairs
+  exist and nothing compares them.** They cover 41 of the 59 datasets: for the
   other 17 the primary sits at version `unknown` while the archive is pinned to
   a date, so there is no same-version pair to compare and the mirror of those
   17 cannot be verified this way at all. Pairing them anyway would report every
   upstream update as mirror drift, which is a different claim. Pass `names` to
-  check a subset — both sides of every pair are fetched, so all 59 is several GB.
+  check a subset — both sides of every pair are fetched, so the whole set is
+  several GB. A 59th same-version candidate exists and is deliberately NOT
+  compared: `ons_lad`'s primary is an API endpoint, so what comes back is a
+  query form rather than the dataset (below).
 
 ### What the check found
 
@@ -73,10 +76,28 @@ response = requests.get(url, params=params)
 ```
 
 So there is no upstream bug here, and the mirror check found a defect in **this
-port** instead: `RetrieveDatasets` treats every `url` cell as a plain GET, which
-for that row silently stores a web page under a `.geojson` name. `VerifyMirror`
-inherits the same flaw — it compared a real GeoJSON against an HTML form and
+port** instead: `RetrieveDatasets` treated every `url` cell as a plain GET, which
+for that row silently stored a web page under a `.geojson` name. `VerifyMirror`
+inherited the same flaw — it compared a real GeoJSON against an HTML form and
 called it a mismatch, which is true but is not the drift it claims to detect.
+
+**Fixed.** A row now carries an `unfetchable_reason` when a plain GET cannot
+resolve it, and `select` prefers the other source rather than fetching something
+that succeeds and stores the wrong bytes (loudly — the reason is logged, and if
+no usable alternative exists it is an error, not a shrug). `pairs_for_verification`
+drops such a side instead of reporting it as drift, which is why the comparable
+count is 58 rather than 59. Two shapes qualify: a `{placeholder}` URL, which is
+decidable from the row (`wdpa`, `wdpa_marine` — `{bYYYY}` is substituted monthly
+upstream), and rows verified one at a time against upstream's rule, currently
+just `ons_lad`/primary.
+
+That second category is deliberately not inferred, because the obvious signal
+does not work. The `note` column says "API request used" on rows that a plain
+GET resolves perfectly well (`instrat_co2_prices`, `worldbank_urban_population`,
+and the *archive* rows of `ons_lad` and `entsoe_electricity_demand`), while
+`eez`'s `download_file.php` reads like a filename. Whether a GET returns the
+dataset or a query form is a property of the response, not of the row — so this
+is a list of what has been checked, not a claim to have found every such row.
 
 **Which qualifies the headline claim, so state it plainly.** The catalogue is
 *mostly* a work list, not entirely one. A minority of rows need a request shape
@@ -85,10 +106,15 @@ part of why not all 73 rules are near-copies. On the default `prefer="archive"`
 path this does not bite: every archive row is a static file on `data.pypsa.org`
 (PyPSA has already materialised the API result), and the two archive rows whose
 note mentions an API are describing how the *dataset* was obtained, not how to
-fetch that row. On `prefer="primary"` it bites for **5 of 59 rows**: `eez` and
-`ons_lad` need query parameters, and `wdpa` / `wdpa_marine` are URL *templates*
-whose `{bYYYY}` upstream substitutes in `retrieve.smk` — fetched literally, they
-are not URLs at all.
+fetch that row.
+
+On `prefer="primary"` it bites. Three rows are now guarded: `ons_lad` (verified
+by fetching it and reading its rule) and `wdpa` / `wdpa_marine`, whose URLs are
+templates upstream substitutes `{bYYYY}` into each month — fetched literally
+they are not addresses at all. Two more are *suspected and unverified*: `eez`'s
+`download_file.php` and the `entsoe_electricity_demand` row upstream reaches
+through the `entsoe-py` package. Neither has been fetched and inspected, so
+neither is guarded — this file records what was checked, not what was guessed.
 
 **Scope of the `nuts3_population` finding.** `config.default.yaml` sets
 `source: archive` for it, so upstream's default path is unaffected — the mirror
@@ -98,15 +124,15 @@ version label, with nothing to report it. Seven of the 59 datasets do default to
 `primary`, and a header probe of all seven shows sane content types today
 (xlsx, GeoTIFF, JSON, octet-stream).
 
-Sizing, from `Content-Length` alone: only **29 of the 59 pairs report a size on
+Sizing, from `Content-Length` alone: only **29 of the pairs report a size on
 both sides** (several refuse HEAD, including the Zenodo-hosted `costs`), and
 those 29 already total **6.49 GiB**. `names` is not a convenience.
 
 ## Status — honest scope
 
 The catalogue logic and both workflows are complete and tested **offline**
-against a checked-in copy of upstream's `versions.csv` (24 tests, no network) —
-including the selection rule, so the "59 downloads, not 94" claim is asserted
+against a checked-in copy of upstream's `versions.csv` (29 tests, no network) —
+including the selection rule, so the "59 downloads, not 92" claim is asserted
 against upstream's real table rather than described.
 
 Retrieval was verified end to end on one real dataset (`eez`, 26 MB from

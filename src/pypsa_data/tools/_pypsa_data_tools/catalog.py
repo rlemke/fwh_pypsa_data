@@ -10,10 +10,14 @@ from `data/versions.csv`, a table of
 with `source` either **primary** (the upstream publisher) or **archive**
 (PyPSA's own mirror at data.pypsa.org). 59 datasets, 164 rows, 158 URLs.
 
-So the retrieval layer is already data — the Snakemake rules are 73 near-copies
-of "download this row and copy it into place". That is why the FFL port needs
-almost no code: this module turns the table into a work list, and the built-in
-`fw.http` / `fw.archive` facets do the rest with no handler at all.
+So the retrieval layer is already data — the Snakemake rules are mostly 73
+near-copies of "download this row and copy it into place". That is why the FFL
+port needs almost no code: this module turns the table into a work list, and the
+built-in `fw.http` / `fw.archive` facets do the rest with no handler at all.
+
+*Mostly*, because a few rows need a request shape the CSV has no column for — a
+URL template upstream substitutes into, or an API call — and those are the rules
+that are not near-copies. See :attr:`Dataset.unfetchable_reason`.
 
 Two things the table makes possible that upstream does not do:
 
@@ -60,6 +64,28 @@ DEFAULT_CATALOG_URL = (
 
 _ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".gz")
 
+#: Rows KNOWN to need a request shape the catalogue has no column for, checked
+#: one at a time rather than inferred.
+#:
+#: The `note` column looks like it should answer this and does not, in both
+#: directions: `instrat_co2_prices` and `worldbank_urban_population` are noted as
+#: API links yet a plain GET returns their data, while `eez`'s `download_file.php`
+#: reads like a filename. Whether a GET yields the dataset or a query form is a
+#: property of the response, not of the row — so anything here is something that
+#: was actually fetched and looked at, and its upstream rule read.
+#:
+#: `ons_lad`/primary: an ArcGIS `/query` endpoint. A bare GET returns the query
+#: FORM as `text/html` with HTTP 200 — a success that stores a web page under a
+#: `.geojson` name. `retrieve.smk` has a dedicated `source: primary` branch
+#: passing `{"outFields": "*", "where": "1=1", "f": "geojson"}`, which is the
+#: shape the CSV cannot express.
+_NEEDS_REQUEST_SHAPE: dict[tuple[str, str], str] = {
+    ("ons_lad", PRIMARY): (
+        "an ArcGIS /query endpoint: a plain GET returns the HTML query form, not "
+        "GeoJSON (upstream passes outFields/where/f — see rule retrieve_ons_lad)"
+    ),
+}
+
 
 @dataclass(frozen=True)
 class Dataset:
@@ -93,10 +119,27 @@ class Dataset:
         """
         return self.filename.lower().endswith(_ARCHIVE_SUFFIXES)
 
+    @property
+    def unfetchable_reason(self) -> str:
+        """Why a plain GET of `url` would NOT yield this dataset, or "".
+
+        Deliberately narrow. A `{placeholder}` in the URL is decidable from the
+        row — it is a template upstream fills in (`{bYYYY}` monthly, for WDPA),
+        so fetching it as written cannot work. Beyond that the answer lives in
+        the response rather than the row, so the only other entries are ones
+        that were fetched, inspected and cross-read against upstream's rule
+        (:data:`_NEEDS_REQUEST_SHAPE`). This is not a claim to have found every
+        such row — see the README.
+        """
+        if "{" in self.url and "}" in self.url:
+            return f"the URL is a template upstream substitutes, not an address: {self.url}"
+        return _NEEDS_REQUEST_SHAPE.get((self.name, self.source), "")
+
     def as_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["filename"] = self.filename
         d["is_archive"] = self.is_archive
+        d["unfetchable_reason"] = self.unfetchable_reason
         return d
 
 
@@ -145,7 +188,7 @@ def select(
     selects on `source`, the `supported` tag and the `latest` tag and then
     `.squeeze()`s the result to a single row. Ignoring the tags is not a
     harmless superset: on the real catalogue it turns a 59-download run into
-    **94**, and what the extra 35 are is the point — deprecated versions,
+    **92**, and what the extra 33 are is the point — deprecated versions,
     versions tagged `not-supported`, and (for eleven datasets) a second
     `latest` row at version `unknown`, which is the *moving un-versioned
     primary*. Keying on `(dataset, version)` made `unknown` look like a version
@@ -209,6 +252,34 @@ def select(
             if pick is None:  # pragma: no cover — only if a row has an unknown source
                 logger.warning("no usable source for %s %s: %s", name, version, sorted(sources))
                 continue
+            # A row a plain GET cannot resolve: prefer the OTHER source rather
+            # than fetching something that succeeds and stores the wrong bytes.
+            if pick.unfetchable_reason:
+                alt = sources.get(other if pick.source == prefer else prefer)
+                if alt is not None and not alt.unfetchable_reason:
+                    logger.warning(
+                        "%s %s: %s row is not fetchable as written (%s) — using %s instead",
+                        name,
+                        pick.version,
+                        pick.source,
+                        pick.unfetchable_reason,
+                        alt.source,
+                    )
+                    pick = alt
+                else:
+                    # No alternative for THIS version. Dropping is not the
+                    # silent-drop the fallback above exists to prevent: fetching
+                    # it cannot succeed, only appear to, and the dataset's other
+                    # versions (if any) are still selected.
+                    logger.error(
+                        "%s %s: dropping the %s row — not fetchable as written (%s) "
+                        "and no usable alternative at this version",
+                        name,
+                        pick.version,
+                        pick.source,
+                        pick.unfetchable_reason,
+                    )
+                    continue
             if pick.source != prefer:
                 logger.info(
                     "%s %s: no %s row, falling back to %s",
@@ -240,6 +311,18 @@ def pairs_for_verification(
     by_key: dict[tuple[str, str], dict[str, Dataset]] = {}
     for ds in catalog:
         if wanted is not None and ds.name not in wanted:
+            continue
+        # A side a plain GET cannot resolve would be compared as whatever came
+        # back — an ArcGIS query form against real GeoJSON reads as "the mirror
+        # drifted", which is a false alarm dressed as this check's whole point.
+        if ds.unfetchable_reason:
+            logger.warning(
+                "%s %s: not comparable, the %s side is not fetchable as written (%s)",
+                ds.name,
+                ds.version,
+                ds.source,
+                ds.unfetchable_reason,
+            )
             continue
         by_key.setdefault((ds.name, ds.version), {})[ds.source] = ds
     return [

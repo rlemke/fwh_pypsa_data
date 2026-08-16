@@ -34,7 +34,7 @@ def test_the_catalogue_is_what_drives_the_port(entries):
     s = catalog.summarise(entries)
     assert s["datasets"] == 59
     assert s["primary"] > 50 and s["archive"] > 50
-    assert s["verifiable_pairs"] == 59
+    assert s["verifiable_pairs"] == 58
 
 
 def test_build_rows_and_url_less_rows_are_dropped(entries):
@@ -120,7 +120,7 @@ def test_mirror_pairs_handler(tmp_path):
     out = catalog_handlers.handle(
         {"_facet_name": "pypsa.data.MirrorPairs", "csv_path": str(csv_path)}
     )
-    assert out["count"] == 59
+    assert out["count"] == 58
     assert {"dataset", "primary_url", "archive_url", "filename"} <= set(out["pairs"][0])
 
 
@@ -169,7 +169,7 @@ def test_default_selects_one_download_per_dataset(entries):
     """Upstream's `dataset_version` filters on source + the `supported` and
     `latest` tags and then `.squeeze()`s to a SINGLE row, so a full run is one
     download per dataset. Ignoring the tags is not a harmless superset: it
-    fetches 94 files for 59 datasets."""
+    fetches 92 files for 59 datasets."""
     chosen = catalog.select(entries)
     assert len(chosen) == 59
     assert len({d.name for d in chosen}) == 59
@@ -178,7 +178,7 @@ def test_default_selects_one_download_per_dataset(entries):
 def test_all_versions_is_the_escape_hatch(entries):
     """Reproducing an older model needs the versions the default drops."""
     every = catalog.select(entries, versions=catalog.V_ALL, supported_only=False)
-    assert len(every) == 94
+    assert len(every) == 92
     costs = [d for d in every if d.name == "costs"]
     assert len(costs) > 1, "the escape hatch must keep every version of a dataset"
     assert len([d for d in catalog.select(entries) if d.name == "costs"]) == 1
@@ -226,7 +226,7 @@ def test_summarise_reports_what_a_full_run_would_cost(entries):
     downloads, not the number of rows in the table."""
     s = catalog.summarise(entries)
     assert s["downloads_default"] == 59
-    assert s["downloads_all_versions"] == 94
+    assert s["downloads_all_versions"] == 92
     assert s["downloads_default"] < s["rows"]
 
 
@@ -235,7 +235,7 @@ def test_mirror_pairs_can_be_restricted_to_names(entries):
     Without a filter the check is all-or-nothing, i.e. nothing on a slow link."""
     one = catalog.pairs_for_verification(entries, names=["aquifer_data"])
     assert [p.name for p, _ in one] == ["aquifer_data"]
-    assert len(catalog.pairs_for_verification(entries)) == 59
+    assert len(catalog.pairs_for_verification(entries)) == 58
 
 
 def test_mirror_pairs_ignore_the_tags(entries):
@@ -259,7 +259,7 @@ def test_handler_payload_carries_the_selection_policy(tmp_path):
         )
 
     assert run()["count"] == 59
-    assert run(versions="all", supported_only=False)["count"] == 94
+    assert run(versions="all", supported_only=False)["count"] == 92
     # supported_only=False must not silently re-enable every version
     assert run(supported_only=False)["count"] == 59
 
@@ -277,3 +277,29 @@ def test_mirror_pairs_handler_takes_names(tmp_path):
         }
     )
     assert out["count"] == 1 and out["pairs"][0]["dataset"] == "aquifer_data"
+
+
+def test_a_side_that_is_not_a_plain_url_is_excluded_from_comparison():
+    """`ons_lad`'s primary is an ArcGIS /query endpoint: a bare GET returns the
+    HTML query form with HTTP 200. Comparing that against the archive's real
+    GeoJSON reports "the mirror drifted", which is a false alarm wearing this
+    check's own clothes — it is what made the first run of this check wrong."""
+    entries = catalog.parse_catalog(SAMPLE)
+    assert "ons_lad" not in {p.name for p, _ in catalog.pairs_for_verification(entries)}
+    assert catalog.pairs_for_verification(entries, names=["ons_lad"]) == []
+
+
+def test_a_template_url_falls_back_to_the_other_source(entries):
+    """WDPA's primary URL carries a `{bYYYY}` that retrieve.smk substitutes each
+    month. Fetched as written it is not an address at all, so preferring the
+    primary must yield the archive rather than a download of the literal."""
+    picked = catalog.select(entries, names=["wdpa", "wdpa_marine"], prefer=catalog.PRIMARY)
+    assert picked and all(d.source == catalog.ARCHIVE for d in picked)
+    assert all(not d.unfetchable_reason for d in picked)
+
+
+def test_the_default_path_has_nothing_unfetchable(entries):
+    """Every archive row is a static file, which is why the fan-out works: the
+    request-shape problem is confined to `prefer="primary"`."""
+    assert not [d for d in catalog.select(entries) if d.unfetchable_reason]
+    assert not [d for d in catalog.select(entries, prefer=catalog.PRIMARY) if d.unfetchable_reason]

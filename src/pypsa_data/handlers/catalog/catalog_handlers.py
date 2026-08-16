@@ -46,7 +46,7 @@ def handle_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     if callable(step_log):
         # Say what was skipped, not just what was picked: the gap between the
         # two is deprecated/unsupported versions and moving un-versioned rows,
-        # and it is the difference between a 59- and a 94-download run.
+        # and it is the difference between a 59- and a 92-download run.
         step_log(
             f"catalogue: {len(chosen)} download(s) selected of {len(entries)} rows "
             f"(versions={versions}, supported_only="

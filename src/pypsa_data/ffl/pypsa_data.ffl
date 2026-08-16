@@ -37,7 +37,7 @@ namespace pypsa.data {
       * own rule) or `all` (every version, for reproducing an older model).
       * `supported_only` drops rows not tagged `supported`. Together they are
       * upstream's `dataset_version` selector: on the real catalogue the
-      * defaults fetch 59 files, and turning both off fetches 94 — the extra 35
+      * defaults fetch 59 files, and turning both off fetches 92 — the extra 33
       * being deprecated versions, versions tagged `not-supported`, and eleven
       * moving un-versioned rows that duplicate the pinned copy. */
     event facet Catalog(
@@ -55,7 +55,7 @@ namespace pypsa.data {
     /** (primary, archive) pairs that should deliver identical bytes.
       *
       * `names` restricts the check — verification fetches BOTH sides of every
-      * pair, so all 59 is several GB and the check is otherwise unrunnable on a
+      * pair, so the whole set is several GB and it is otherwise unrunnable on a
       * slow or metered link. */
     event facet MirrorPairs(csv_path: String, names: Json = []) => (
         pairs: Json,
@@ -132,7 +132,10 @@ namespace pypsa.data {
       *
       * Fetches both URLs of a pair and compares the digests `fw.http.Fetch`
       * records. A drifted mirror is inherited silently by every model built
-      * from it, and 59 pairs currently go unchecked. */
+      * from it, and 58 comparable pairs currently go unchecked. (A row whose
+      * URL an API call rather than a plain GET resolves is excluded: what comes
+      * back is a query form, and comparing THAT reports drift that is not
+      * there.) */
     facet ComparePair(pair: Json, out_dir: String) => (verdict: Json)
         andThen {
             primary = fw.http.Fetch(
