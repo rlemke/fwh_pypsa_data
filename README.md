@@ -50,6 +50,39 @@ so once an output exists nothing can make it stale (thesis §13.3).
   upstream update as mirror drift, which is a different claim. Pass `names` to
   check a subset — both sides of every pair are fetched, so all 59 is several GB.
 
+### What the check found
+
+Run on three pairs (2026-08-16). It is a real check, so what it says is worth
+recording, not just that it exists.
+
+| dataset | verdict |
+|---|---|
+| `emobility` 28-08-2016 | **match** — same sha256 on both sides |
+| `nuts3_population` 13-03-2025 | **differs** — both rows carry that same version label, but the primary has gained a 2024 column, **dropped 35 rows** (every Swiss `CH*` NUTS region) and revised all 1,755 rows the two share |
+| `ons_lad` may-2024 | **primary is broken** — it serves an **ArcGIS "Services Directory" HTML page** with `Content-Type: text/html` and **HTTP 200**, 11 KB where the archive holds the 2.7 MB GeoJSON |
+
+`ons_lad` is the one worth dwelling on: it is a *successful* download of the
+wrong thing. A `storage(...)` rule saves it, the rule succeeds, the file exists
+and is newer than its inputs, and the pipeline continues with a web page where a
+boundary file should be. Nothing in `retrieve.smk` inspects a content type or a
+digest, so nothing can say otherwise — thesis §13.3, as a live example rather
+than an argument. `fw.http.Fetch` records `content_type` in the sidecar, which
+is what made it obvious here.
+
+**The scope of that claim, honestly.** `config.default.yaml` sets
+`source: archive` for both, so upstream's *default* path is unaffected — the
+mirror is doing exactly the job it exists for. What is affected is the
+per-dataset `source: primary` switch the catalogue exists to offer: flip it for
+`ons_lad` and you silently get HTML, flip it for `nuts3_population` and you
+silently get different data under an unchanged version label. Seven of the 59
+datasets do default to `primary`, and a header probe of all seven shows sane
+content types today (xlsx, GeoTIFF, JSON, octet-stream), so none is in this
+state right now.
+
+Sizing, from `Content-Length` alone: only **29 of the 59 pairs report a size on
+both sides** (several refuse HEAD, including the Zenodo-hosted `costs`), and
+those 29 already total **6.49 GiB**. `names` is not a convenience.
+
 ## Status — honest scope
 
 The catalogue logic and both workflows are complete and tested **offline**
