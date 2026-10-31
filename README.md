@@ -19,9 +19,10 @@ cat     = Catalog(csv_path = $.csv_path, prefer = "archive")
 fetched = FetchEach(datasets = cat.datasets, out_dir = $.out_dir, concurrency = 4)
 ```
 
-`Catalog` and `MirrorPairs` are the **only** handlers in this package. Fetching,
-unpacking and the manifest are built-in `fw.http` / `fw.archive` / `fw.file`
-facets — no handler code at all.
+`Catalog` and `MirrorPairs` are the **only** handlers in this package. Fetching
+and the manifest are built-in `fw.http` / `fw.file` facets — no handler code at
+all. Nothing is unpacked: each dataset is stored as published. The FFL `use`s
+`fw.archive`, but no step calls `fw.archive.Extract` yet.
 
 **Which row per dataset.** The table has 153 retrievable rows for 59 datasets,
 so a work list is a selection, not a listing. `Catalog` applies upstream's own

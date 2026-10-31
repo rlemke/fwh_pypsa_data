@@ -62,7 +62,7 @@ namespace pypsa.data {
         count: Int
     ) with Effect(kind = "io") with Cost(tier = "free")
 
-    /** Retrieve one dataset, unpacking it when it is an archive. */
+    /** Retrieve one dataset, stored as published (archives are not unpacked). */
     facet RetrieveOne(dataset: Json, out_dir: String) => (stored: Json)
         andThen {
             got = fw.http.Fetch(
